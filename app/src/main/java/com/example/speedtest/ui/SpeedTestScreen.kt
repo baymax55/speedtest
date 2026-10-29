@@ -15,22 +15,33 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -45,10 +56,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.speedtest.data.Phase
+import com.example.speedtest.data.SpeedTestRecord
 import com.example.speedtest.ui.theme.AccentBlue
 import com.example.speedtest.ui.theme.AccentCyan
 import com.example.speedtest.ui.theme.AccentPurple
 import com.example.speedtest.ui.theme.SpeedtestTheme
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.cos
 import kotlin.math.ln
 import kotlin.math.min
@@ -61,14 +76,30 @@ private const val GAUGE_MAX_MBPS = 1000.0
 @Composable
 fun SpeedTestScreen(viewModel: SpeedTestViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    SpeedTestContent(state = state, onStart = viewModel::start, onCancel = viewModel::cancel)
+    var showHistory by rememberSaveable { mutableStateOf(false) }
+
+    SpeedTestContent(
+        state = state,
+        onStart = viewModel::start,
+        onCancel = viewModel::cancel,
+        onShowHistory = { showHistory = true }
+    )
+
+    if (showHistory) {
+        HistorySheet(
+            records = state.history,
+            onDismiss = { showHistory = false },
+            onClear = viewModel::clearHistory
+        )
+    }
 }
 
 @Composable
 private fun SpeedTestContent(
     state: UiState,
     onStart: () -> Unit,
-    onCancel: () -> Unit
+    onCancel: () -> Unit,
+    onShowHistory: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
     Box(
@@ -126,26 +157,44 @@ private fun SpeedTestContent(
                 )
             }
 
-            Button(
-                onClick = { if (state.isRunning) onCancel() else onStart() },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(54.dp),
-                shape = RoundedCornerShape(27.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (state.isRunning) colors.surfaceVariant else colors.primary,
-                    contentColor = if (state.isRunning) colors.onSurfaceVariant else colors.onPrimary
-                )
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text(
-                    text = when {
-                        state.isRunning -> "停止"
-                        state.phase == Phase.DONE -> "重新测试"
-                        else -> "开始测速"
-                    },
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
+                Button(
+                    onClick = { if (state.isRunning) onCancel() else onStart() },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(54.dp),
+                    shape = RoundedCornerShape(27.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (state.isRunning) colors.surfaceVariant else colors.primary,
+                        contentColor = if (state.isRunning) colors.onSurfaceVariant else colors.onPrimary
+                    )
+                ) {
+                    Text(
+                        text = when {
+                            state.isRunning -> "停止"
+                            state.phase == Phase.DONE -> "重新测试"
+                            else -> "开始测速"
+                        },
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onShowHistory,
+                    modifier = Modifier.height(54.dp),
+                    shape = RoundedCornerShape(27.dp)
+                ) {
+                    Text(
+                        text = if (state.history.isEmpty()) "历史" else "历史 ${state.history.size}",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = colors.onSurfaceVariant
+                    )
+                }
             }
         }
     }
@@ -363,6 +412,110 @@ private fun MetricCard(label: String, value: String, unit: String, modifier: Mod
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HistorySheet(
+    records: List<SpeedTestRecord>,
+    onDismiss: () -> Unit,
+    onClear: () -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = colors.surface
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp)
+        ) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "历史记录",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = colors.onSurface
+                )
+                if (records.isNotEmpty()) {
+                    TextButton(onClick = onClear) {
+                        Text("清空", fontSize = 13.sp, color = colors.onSurfaceVariant)
+                    }
+                }
+            }
+
+            if (records.isEmpty()) {
+                Text(
+                    text = "还没有测试记录",
+                    fontSize = 13.sp,
+                    color = colors.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 28.dp)
+                )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 420.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(records) { record -> HistoryRow(record) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryRow(record: SpeedTestRecord) {
+    val colors = MaterialTheme.colorScheme
+    val timeFormat = remember { SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()) }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = colors.surfaceVariant.copy(alpha = 0.55f))
+    ) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = timeFormat.format(Date(record.id)),
+                    fontSize = 12.sp,
+                    color = colors.onSurfaceVariant
+                )
+                Text(
+                    text = "${record.connection} · ${record.server}",
+                    fontSize = 12.sp,
+                    color = colors.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                HistoryValue("延迟", "${formatMs(record.pingMs)} ms")
+                HistoryValue("下载", "${formatSpeed(record.downloadMbps)} Mbps")
+                HistoryValue("上传", "${formatSpeed(record.uploadMbps)} Mbps")
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryValue(label: String, value: String) {
+    val colors = MaterialTheme.colorScheme
+    Column {
+        Text(text = label, fontSize = 10.sp, color = colors.onSurfaceVariant)
+        Text(
+            text = value,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = colors.onSurface
+        )
+    }
+}
+
 /** 对数刻度：低速段分辨率更高，0 → 0，1000Mbps → 1 */
 private fun gaugeFraction(mbps: Double): Float {
     val v = mbps.coerceIn(0.0, GAUGE_MAX_MBPS)
@@ -395,7 +548,8 @@ private fun SpeedTestPreview() {
                 connection = "Wi-Fi"
             ),
             onStart = {},
-            onCancel = {}
+            onCancel = {},
+            onShowHistory = {}
         )
     }
 }

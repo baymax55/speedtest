@@ -7,15 +7,19 @@ import android.net.NetworkCapabilities
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.speedtest.data.Phase
+import com.example.speedtest.data.ResultStore
 import com.example.speedtest.data.SpeedTestConfig
 import com.example.speedtest.data.SpeedTestEngine
+import com.example.speedtest.data.SpeedTestRecord
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.max
 
 /** 界面状态 */
@@ -29,8 +33,9 @@ data class UiState(
     val downloadMbps: Double? = null,
     val uploadMbps: Double? = null,
     val connection: String = "检测中",
-    val server: String = "Cloudflare",
-    val error: String? = null
+    val server: String = "自动选择节点",
+    val error: String? = null,
+    val history: List<SpeedTestRecord> = emptyList()
 ) {
     val isRunning: Boolean
         get() = phase == Phase.PING || phase == Phase.DOWNLOAD || phase == Phase.UPLOAD
@@ -49,6 +54,7 @@ data class UiState(
 class SpeedTestViewModel(app: Application) : AndroidViewModel(app) {
 
     private val engine = SpeedTestEngine()
+    private val store = ResultStore(app)
     private val _state = MutableStateFlow(UiState(connection = connectionLabel()))
     val state: StateFlow<UiState> = _state.asStateFlow()
 
@@ -56,9 +62,8 @@ class SpeedTestViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch {
-            engine.fetchServerInfo()?.let { colo ->
-                _state.update { it.copy(server = "Cloudflare · $colo") }
-            }
+            val saved = withContext(Dispatchers.IO) { store.load() }
+            _state.update { it.copy(history = saved) }
         }
     }
 
@@ -69,10 +74,13 @@ class SpeedTestViewModel(app: Application) : AndroidViewModel(app) {
             _state.value = UiState(
                 phase = Phase.PING,
                 connection = connectionLabel(),
-                server = _state.value.server
+                server = "选择节点中…"
             )
             try {
-                val ping = engine.ping { index, ms ->
+                val node = engine.selectNode()
+                _state.update { it.copy(server = node.name) }
+
+                val ping = engine.ping(node) { index, ms ->
                     _state.update {
                         it.copy(
                             pingMs = ms,
@@ -85,7 +93,7 @@ class SpeedTestViewModel(app: Application) : AndroidViewModel(app) {
                 }
 
                 _state.update { it.copy(phase = Phase.DOWNLOAD, progress = 0f, speedMbps = 0.0) }
-                val down = engine.download { mbps, progress ->
+                val down = engine.download(node) { mbps, progress ->
                     _state.update {
                         it.copy(
                             speedMbps = mbps,
@@ -107,12 +115,24 @@ class SpeedTestViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
 
+                val record = SpeedTestRecord(
+                    id = System.currentTimeMillis(),
+                    connection = _state.value.connection,
+                    server = node.name,
+                    pingMs = ping.avgMs,
+                    jitterMs = ping.jitterMs,
+                    downloadMbps = down,
+                    uploadMbps = up
+                )
+                val history = withContext(Dispatchers.IO) { store.add(record) }
+
                 _state.update {
                     it.copy(
                         phase = Phase.DONE,
                         uploadMbps = up,
                         speedMbps = down,
-                        progress = 1f
+                        progress = 1f,
+                        history = history
                     )
                 }
             } catch (e: CancellationException) {
@@ -129,6 +149,13 @@ class SpeedTestViewModel(app: Application) : AndroidViewModel(app) {
         job?.cancel()
         job = null
         _state.update { it.copy(phase = Phase.IDLE, progress = 0f, speedMbps = 0.0) }
+    }
+
+    fun clearHistory() {
+        viewModelScope.launch {
+            val empty = withContext(Dispatchers.IO) { store.clear() }
+            _state.update { it.copy(history = empty) }
+        }
     }
 
     private fun connectionLabel(): String {
